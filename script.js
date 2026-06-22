@@ -20,7 +20,7 @@
    ====================================================================== */
 
 (() => {
-  'use strict';
+  "use strict";
 
   /* ----------------------------------------------------------------
      1. CONSTANTS & SMALL UTILITIES
@@ -76,26 +76,26 @@
   class StegoError extends Error {
     constructor(code, message) {
       super(message);
-      this.name = 'StegoError';
+      this.name = "StegoError";
       this.code = code;
     }
   }
 
   const ERROR_TITLES = {
-    NO_FILE: 'No image selected',
-    INVALID_TYPE: 'Unsupported file type',
-    TOO_LARGE: 'Image too large',
-    DECODE_FAILED: 'Could not read image',
-    READ_FAILED: 'Could not read file',
-    NO_IMAGE: 'Image required',
-    EMPTY_MESSAGE: 'Message required',
-    NO_PASSWORD: 'Password required',
-    CAPACITY_EXCEEDED: 'Message too large',
-    NOT_STEGO_IMAGE: 'No hidden message found',
-    CORRUPTED: 'Data looks corrupted',
-    PASSWORD_REQUIRED: 'Password needed',
-    WRONG_PASSWORD: 'Incorrect password',
-    CRYPTO_UNAVAILABLE: 'Encryption unavailable',
+    NO_FILE: "No image selected",
+    INVALID_TYPE: "Unsupported file type",
+    TOO_LARGE: "Image too large",
+    DECODE_FAILED: "Could not read image",
+    READ_FAILED: "Could not read file",
+    NO_IMAGE: "Image required",
+    EMPTY_MESSAGE: "Message required",
+    NO_PASSWORD: "Password required",
+    CAPACITY_EXCEEDED: "Message too large",
+    NOT_STEGO_IMAGE: "No hidden message found",
+    CORRUPTED: "Image appears compressed or corrupted",
+    PASSWORD_REQUIRED: "Password needed",
+    WRONG_PASSWORD: "Incorrect password",
+    CRYPTO_UNAVAILABLE: "Encryption unavailable",
   };
 
   /* ----------------------------------------------------------------
@@ -145,7 +145,10 @@
     const data = imageData.data;
     const capacity = usableChannelCount(imageData);
     if (bits.length > capacity) {
-      throw new StegoError('CAPACITY_EXCEEDED', 'The message is larger than this image can hold.');
+      throw new StegoError(
+        "CAPACITY_EXCEEDED",
+        "The message is larger than this image can hold.",
+      );
     }
     for (let i = 0; i < bits.length; i++) {
       const pixelIndex = Math.floor(i / 3);
@@ -197,8 +200,8 @@
     const capacity = usableChannelCount(imageData);
     if (bits.length > capacity) {
       throw new StegoError(
-        'CAPACITY_EXCEEDED',
-        `This message needs ${formatBytes(fullBytes.length)} but this image can only hold ${formatBytes(Math.floor(capacity / 8))}.`
+        "CAPACITY_EXCEEDED",
+        `This message needs ${formatBytes(fullBytes.length)} but this image can only hold ${formatBytes(Math.floor(capacity / 8))}.`,
       );
     }
 
@@ -215,7 +218,10 @@
     const headerBitCount = HEADER_BYTES * 8;
 
     if (capacity < headerBitCount) {
-      throw new StegoError('NOT_STEGO_IMAGE', 'This image is too small to contain a hidden message.');
+      throw new StegoError(
+        "NOT_STEGO_IMAGE",
+        "This image is too small to contain a hidden message.",
+      );
     }
 
     const headerBits = extractBitsFromImageData(imageData, headerBitCount);
@@ -224,8 +230,8 @@
 
     if (magic !== HEADER_MAGIC) {
       throw new StegoError(
-        'NOT_STEGO_IMAGE',
-        'No hidden message was found here — this image was not created with Steganography Studio.'
+        "NOT_STEGO_IMAGE",
+        "No hidden message was found here — this image was not created with Steganography Studio.",
       );
     }
 
@@ -234,7 +240,10 @@
     const totalBitsNeeded = headerBitCount + payloadLength * 8;
 
     if (totalBitsNeeded > capacity) {
-      throw new StegoError('CORRUPTED', 'The hidden data looks incomplete or corrupted.');
+      throw new StegoError(
+        "CORRUPTED",
+        "The hidden data looks incomplete or corrupted.",
+      );
     }
 
     const allBits = extractBitsFromImageData(imageData, totalBitsNeeded);
@@ -242,13 +251,19 @@
 
     if (flag === 1) {
       if (!password) {
-        throw new StegoError('PASSWORD_REQUIRED', 'This message is password-protected. Enter the password to reveal it.');
+        throw new StegoError(
+          "PASSWORD_REQUIRED",
+          "This message is password-protected. Enter the password to reveal it.",
+        );
       }
       let plainBytes;
       try {
         plainBytes = await decryptMessage(payloadBytes, password);
       } catch (err) {
-        throw new StegoError('WRONG_PASSWORD', 'Incorrect password, or the image data is corrupted.');
+        throw new StegoError(
+          "WRONG_PASSWORD",
+          "Incorrect password, or the image data is corrupted.",
+        );
       }
       return new TextDecoder().decode(plainBytes);
     }
@@ -264,37 +279,42 @@
 
   async function deriveKey(password, salt) {
     const keyMaterial = await crypto.subtle.importKey(
-      'raw',
+      "raw",
       new TextEncoder().encode(password),
-      'PBKDF2',
+      "PBKDF2",
       false,
-      ['deriveKey']
+      ["deriveKey"],
     );
     return crypto.subtle.deriveKey(
-      { name: 'PBKDF2', salt, iterations: PBKDF2_ITERATIONS, hash: 'SHA-256' },
+      { name: "PBKDF2", salt, iterations: PBKDF2_ITERATIONS, hash: "SHA-256" },
       keyMaterial,
-      { name: 'AES-GCM', length: 256 },
+      { name: "AES-GCM", length: 256 },
       false,
-      ['encrypt', 'decrypt']
+      ["encrypt", "decrypt"],
     );
   }
 
   /** Returns Uint8Array: [salt(16)][iv(12)][ciphertext+tag]. */
   async function encryptMessage(message, password) {
     if (!hasWebCrypto) {
-      throw new StegoError('CRYPTO_UNAVAILABLE', 'Your browser does not support the Web Crypto API needed for encryption.');
+      throw new StegoError(
+        "CRYPTO_UNAVAILABLE",
+        "Your browser does not support the Web Crypto API needed for encryption.",
+      );
     }
     const salt = crypto.getRandomValues(new Uint8Array(SALT_LENGTH));
     const iv = crypto.getRandomValues(new Uint8Array(IV_LENGTH));
     const key = await deriveKey(password, salt);
     const cipherBuffer = await crypto.subtle.encrypt(
-      { name: 'AES-GCM', iv },
+      { name: "AES-GCM", iv },
       key,
-      new TextEncoder().encode(message)
+      new TextEncoder().encode(message),
     );
     const cipherBytes = new Uint8Array(cipherBuffer);
 
-    const combined = new Uint8Array(salt.length + iv.length + cipherBytes.length);
+    const combined = new Uint8Array(
+      salt.length + iv.length + cipherBytes.length,
+    );
     combined.set(salt, 0);
     combined.set(iv, salt.length);
     combined.set(cipherBytes, salt.length + iv.length);
@@ -307,7 +327,11 @@
     const iv = payloadBytes.slice(SALT_LENGTH, SALT_LENGTH + IV_LENGTH);
     const cipherBytes = payloadBytes.slice(SALT_LENGTH + IV_LENGTH);
     const key = await deriveKey(password, salt);
-    const plainBuffer = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, cipherBytes);
+    const plainBuffer = await crypto.subtle.decrypt(
+      { name: "AES-GCM", iv },
+      key,
+      cipherBytes,
+    );
     return new Uint8Array(plainBuffer);
   }
 
@@ -316,69 +340,78 @@
      ---------------------------------------------------------------- */
 
   const root = document.documentElement;
-  const themeToggle = document.getElementById('themeToggle');
+  const themeToggle = document.getElementById("themeToggle");
 
-  const tabHide = document.getElementById('tab-hide');
-  const tabReveal = document.getElementById('tab-reveal');
-  const tabIndicator = document.querySelector('.tab-indicator');
-  const panelHide = document.getElementById('panel-hide');
-  const panelReveal = document.getElementById('panel-reveal');
+  const tabHide = document.getElementById("tab-hide");
+  const tabReveal = document.getElementById("tab-reveal");
+  const tabIndicator = document.querySelector(".tab-indicator");
+  const panelHide = document.getElementById("panel-hide");
+  const panelReveal = document.getElementById("panel-reveal");
 
-  const toastContainer = document.getElementById('toastContainer');
+  const toastContainer = document.getElementById("toastContainer");
 
   // Hide tab
-  const hideDropzone = document.getElementById('hideDropzone');
-  const hideFileInput = document.getElementById('hideFileInput');
-  const hidePreviewWrap = document.getElementById('hidePreviewWrap');
-  const hidePreviewImg = document.getElementById('hidePreviewImg');
-  const hideRemoveImg = document.getElementById('hideRemoveImg');
-  const hideImgDims = document.getElementById('hideImgDims');
-  const hideImgSize = document.getElementById('hideImgSize');
-  const hideMessageInput = document.getElementById('hideMessageInput');
-  const hideCharCount = document.getElementById('hideCharCount');
-  const hideByteCount = document.getElementById('hideByteCount');
-  const hideCapacityTrack = document.getElementById('hideCapacityTrack');
-  const hideCapacityFill = document.getElementById('hideCapacityFill');
-  const hideCapacityHint = document.getElementById('hideCapacityHint');
-  const hideEncryptToggle = document.getElementById('hideEncryptToggle');
-  const hidePasswordWrap = document.getElementById('hidePasswordWrap');
-  const hidePasswordInput = document.getElementById('hidePasswordInput');
-  const hidePasswordVisibility = document.getElementById('hidePasswordVisibility');
-  const hideSubmitBtn = document.getElementById('hideSubmitBtn');
+  const hideDropzone = document.getElementById("hideDropzone");
+  const hideFileInput = document.getElementById("hideFileInput");
+  const hidePreviewWrap = document.getElementById("hidePreviewWrap");
+  const hidePreviewImg = document.getElementById("hidePreviewImg");
+  const hideRemoveImg = document.getElementById("hideRemoveImg");
+  const hideImgDims = document.getElementById("hideImgDims");
+  const hideImgSize = document.getElementById("hideImgSize");
+  const hideMessageInput = document.getElementById("hideMessageInput");
+  const hideCharCount = document.getElementById("hideCharCount");
+  const hideByteCount = document.getElementById("hideByteCount");
+  const hideCapacityTrack = document.getElementById("hideCapacityTrack");
+  const hideCapacityFill = document.getElementById("hideCapacityFill");
+  const hideCapacityHint = document.getElementById("hideCapacityHint");
+  const hideEncryptToggle = document.getElementById("hideEncryptToggle");
+  const hidePasswordWrap = document.getElementById("hidePasswordWrap");
+  const hidePasswordInput = document.getElementById("hidePasswordInput");
+  const hidePasswordVisibility = document.getElementById(
+    "hidePasswordVisibility",
+  );
+  const hideSubmitBtn = document.getElementById("hideSubmitBtn");
 
   // Reveal tab
-  const revealDropzone = document.getElementById('revealDropzone');
-  const revealFileInput = document.getElementById('revealFileInput');
-  const revealPreviewWrap = document.getElementById('revealPreviewWrap');
-  const revealPreviewImg = document.getElementById('revealPreviewImg');
-  const revealRemoveImg = document.getElementById('revealRemoveImg');
-  const revealImgDims = document.getElementById('revealImgDims');
-  const revealImgSize = document.getElementById('revealImgSize');
-  const revealPasswordInput = document.getElementById('revealPasswordInput');
-  const revealPasswordVisibility = document.getElementById('revealPasswordVisibility');
-  const revealSubmitBtn = document.getElementById('revealSubmitBtn');
-  const revealOutputWrap = document.getElementById('revealOutputWrap');
-  const revealOutputText = document.getElementById('revealOutputText');
-  const revealCopyBtn = document.getElementById('revealCopyBtn');
+  const revealDropzone = document.getElementById("revealDropzone");
+  const revealFileInput = document.getElementById("revealFileInput");
+  const revealPreviewWrap = document.getElementById("revealPreviewWrap");
+  const revealPreviewImg = document.getElementById("revealPreviewImg");
+  const revealRemoveImg = document.getElementById("revealRemoveImg");
+  const revealImgDims = document.getElementById("revealImgDims");
+  const revealImgSize = document.getElementById("revealImgSize");
+  const revealPasswordInput = document.getElementById("revealPasswordInput");
+  const revealPasswordVisibility = document.getElementById(
+    "revealPasswordVisibility",
+  );
+  const revealSubmitBtn = document.getElementById("revealSubmitBtn");
+  const revealOutputWrap = document.getElementById("revealOutputWrap");
+  const revealOutputText = document.getElementById("revealOutputText");
+  const revealCopyBtn = document.getElementById("revealCopyBtn");
 
   // Per-tab application state
   const state = {
-    hide: { file: null, fileName: '', imageData: null, capacityBytes: 0 },
-    reveal: { file: null, imageData: null, lastMessage: '' },
+    hide: { file: null, fileName: "", imageData: null, capacityBytes: 0 },
+    reveal: { file: null, imageData: null, lastMessage: "" },
   };
 
-  const prefersReducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const prefersReducedMotion = window.matchMedia(
+    "(prefers-reduced-motion: reduce)",
+  ).matches;
 
   /* ----------------------------------------------------------------
      7. THEME TOGGLE
      ---------------------------------------------------------------- */
 
   function applyTheme(theme) {
-    root.setAttribute('data-theme', theme);
-    themeToggle.setAttribute('aria-pressed', String(theme === 'light'));
-    themeToggle.setAttribute('aria-label', theme === 'light' ? 'Switch to dark theme' : 'Switch to light theme');
+    root.setAttribute("data-theme", theme);
+    themeToggle.setAttribute("aria-pressed", String(theme === "light"));
+    themeToggle.setAttribute(
+      "aria-label",
+      theme === "light" ? "Switch to dark theme" : "Switch to light theme",
+    );
     try {
-      localStorage.setItem('stego-studio-theme', theme);
+      localStorage.setItem("stego-studio-theme", theme);
     } catch (_) {
       /* localStorage unavailable (e.g. private browsing) — theme just won't persist */
     }
@@ -387,15 +420,15 @@
   function initTheme() {
     let saved = null;
     try {
-      saved = localStorage.getItem('stego-studio-theme');
+      saved = localStorage.getItem("stego-studio-theme");
     } catch (_) {
       /* ignore */
     }
-    applyTheme(saved === 'light' || saved === 'dark' ? saved : 'dark');
+    applyTheme(saved === "light" || saved === "dark" ? saved : "dark");
   }
 
-  themeToggle.addEventListener('click', () => {
-    applyTheme(root.getAttribute('data-theme') === 'dark' ? 'light' : 'dark');
+  themeToggle.addEventListener("click", () => {
+    applyTheme(root.getAttribute("data-theme") === "dark" ? "light" : "dark");
   });
 
   /* ----------------------------------------------------------------
@@ -403,24 +436,26 @@
      ---------------------------------------------------------------- */
 
   function activateTab(name) {
-    const isHide = name === 'hide';
-    tabHide.setAttribute('aria-selected', String(isHide));
-    tabReveal.setAttribute('aria-selected', String(!isHide));
+    const isHide = name === "hide";
+    tabHide.setAttribute("aria-selected", String(isHide));
+    tabReveal.setAttribute("aria-selected", String(!isHide));
     tabHide.tabIndex = isHide ? 0 : -1;
     tabReveal.tabIndex = isHide ? -1 : 0;
-    panelHide.classList.toggle('hidden', !isHide);
-    panelReveal.classList.toggle('hidden', isHide);
-    tabIndicator.style.transform = isHide ? 'translateX(0%)' : 'translateX(100%)';
+    panelHide.classList.toggle("hidden", !isHide);
+    panelReveal.classList.toggle("hidden", isHide);
+    tabIndicator.style.transform = isHide
+      ? "translateX(0%)"
+      : "translateX(100%)";
   }
 
-  tabHide.addEventListener('click', () => activateTab('hide'));
-  tabReveal.addEventListener('click', () => activateTab('reveal'));
+  tabHide.addEventListener("click", () => activateTab("hide"));
+  tabReveal.addEventListener("click", () => activateTab("reveal"));
 
   [tabHide, tabReveal].forEach((tab, idx, arr) => {
-    tab.addEventListener('keydown', (e) => {
-      if (e.key !== 'ArrowRight' && e.key !== 'ArrowLeft') return;
+    tab.addEventListener("keydown", (e) => {
+      if (e.key !== "ArrowRight" && e.key !== "ArrowLeft") return;
       e.preventDefault();
-      const dir = e.key === 'ArrowRight' ? 1 : -1;
+      const dir = e.key === "ArrowRight" ? 1 : -1;
       const next = arr[(idx + dir + arr.length) % arr.length];
       next.focus();
       next.click();
@@ -432,39 +467,42 @@
      ---------------------------------------------------------------- */
 
   const TOAST_ICONS = {
-    success: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8.5 12.5l2.5 2.5 5-5.5"></path></svg>',
-    error: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5L21 19H3L12 3.5Z"></path><path d="M12 9.5v4.2"></path><path d="M12 16.8h.01"></path></svg>',
+    success:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M8.5 12.5l2.5 2.5 5-5.5"></path></svg>',
+    error:
+      '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3.5L21 19H3L12 3.5Z"></path><path d="M12 9.5v4.2"></path><path d="M12 16.8h.01"></path></svg>',
     info: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 11v5"></path><path d="M12 7.5h.01"></path></svg>',
   };
-  const ICON_X = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>';
+  const ICON_X =
+    '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"></path></svg>';
 
   function showToast(type, title, message, duration = 5000) {
-    const toast = document.createElement('div');
+    const toast = document.createElement("div");
     toast.className = `toast toast--${type}`;
-    toast.setAttribute('role', type === 'error' ? 'alert' : 'status');
+    toast.setAttribute("role", type === "error" ? "alert" : "status");
 
-    const iconSpan = document.createElement('span');
-    iconSpan.className = 'toast-icon';
+    const iconSpan = document.createElement("span");
+    iconSpan.className = "toast-icon";
     iconSpan.innerHTML = TOAST_ICONS[type] || TOAST_ICONS.info;
 
-    const content = document.createElement('div');
-    content.className = 'toast-content';
-    const titleEl = document.createElement('p');
-    titleEl.className = 'toast-title';
+    const content = document.createElement("div");
+    content.className = "toast-content";
+    const titleEl = document.createElement("p");
+    titleEl.className = "toast-title";
     titleEl.textContent = title;
-    const messageEl = document.createElement('p');
-    messageEl.className = 'toast-message';
+    const messageEl = document.createElement("p");
+    messageEl.className = "toast-message";
     messageEl.textContent = message;
     content.append(titleEl, messageEl);
 
-    const closeBtn = document.createElement('button');
-    closeBtn.className = 'toast-close';
-    closeBtn.type = 'button';
-    closeBtn.setAttribute('aria-label', 'Dismiss notification');
+    const closeBtn = document.createElement("button");
+    closeBtn.className = "toast-close";
+    closeBtn.type = "button";
+    closeBtn.setAttribute("aria-label", "Dismiss notification");
     closeBtn.innerHTML = ICON_X;
 
-    const progress = document.createElement('span');
-    progress.className = 'toast-progress';
+    const progress = document.createElement("span");
+    progress.className = "toast-progress";
     progress.style.animationDuration = `${duration}ms`;
 
     toast.append(iconSpan, content, closeBtn, progress);
@@ -473,14 +511,14 @@
     let dismissTimer;
     const removeToast = () => {
       clearTimeout(dismissTimer);
-      toast.classList.add('toast--leaving');
+      toast.classList.add("toast--leaving");
       setTimeout(() => toast.remove(), 260);
     };
 
     dismissTimer = setTimeout(removeToast, duration);
-    closeBtn.addEventListener('click', removeToast);
-    toast.addEventListener('mouseenter', () => clearTimeout(dismissTimer));
-    toast.addEventListener('mouseleave', () => {
+    closeBtn.addEventListener("click", removeToast);
+    toast.addEventListener("mouseenter", () => clearTimeout(dismissTimer));
+    toast.addEventListener("mouseleave", () => {
       dismissTimer = setTimeout(removeToast, 1500);
     });
   }
@@ -488,9 +526,17 @@
   function handleStegoError(err) {
     console.error(err);
     if (err instanceof StegoError) {
-      showToast('error', ERROR_TITLES[err.code] || 'Error', err.message);
+      let message = err.message;
+      if (err.code === "CORRUPTED") {
+        message = "The hidden data could not be recovered. This usually happens if the image was compressed through WhatsApp, social media, or email. Try sharing the PNG file directly via file transfer or cloud storage instead.";
+      }
+      showToast("error", ERROR_TITLES[err.code] || "Error", message);
     } else {
-      showToast('error', 'Something went wrong', 'An unexpected error occurred. Please try again.');
+      showToast(
+        "error",
+        "Something went wrong",
+        "An unexpected error occurred. Please try again.",
+      );
     }
   }
 
@@ -499,16 +545,19 @@
      ---------------------------------------------------------------- */
 
   function validatePngFile(file) {
-    if (!file) throw new StegoError('NO_FILE', 'No file was selected.');
-    const isPng = file.type === 'image/png' || /\.png$/i.test(file.name);
+    if (!file) throw new StegoError("NO_FILE", "No file was selected.");
+    const isPng = file.type === "image/png" || /\.png$/i.test(file.name);
     if (!isPng) {
       throw new StegoError(
-        'INVALID_TYPE',
-        'Please upload a PNG image. Other formats, like JPEG, use lossy compression that destroys hidden data.'
+        "INVALID_TYPE",
+        "Please upload a PNG image. Other formats, like JPEG, use lossy compression that destroys hidden data.",
       );
     }
     if (file.size > MAX_FILE_SIZE) {
-      throw new StegoError('TOO_LARGE', 'This image is larger than 25 MB. Please choose a smaller image.');
+      throw new StegoError(
+        "TOO_LARGE",
+        "This image is larger than 25 MB. Please choose a smaller image.",
+      );
     }
   }
 
@@ -518,34 +567,41 @@
       reader.onload = () => {
         const img = new Image();
         img.onload = () => resolve(img);
-        img.onerror = () => reject(new StegoError('DECODE_FAILED', 'This file could not be read as an image.'));
+        img.onerror = () =>
+          reject(
+            new StegoError(
+              "DECODE_FAILED",
+              "This file could not be read as an image.",
+            ),
+          );
         img.src = reader.result;
       };
-      reader.onerror = () => reject(new StegoError('READ_FAILED', 'The file could not be read.'));
+      reader.onerror = () =>
+        reject(new StegoError("READ_FAILED", "The file could not be read."));
       reader.readAsDataURL(file);
     });
   }
 
   /** Draws an <img> onto an offscreen canvas at native resolution and returns its pixel data. */
   function imageToImageData(img) {
-    const canvas = document.createElement('canvas');
+    const canvas = document.createElement("canvas");
     canvas.width = img.naturalWidth;
     canvas.height = img.naturalHeight;
-    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    const ctx = canvas.getContext("2d", { willReadFrequently: true });
     ctx.drawImage(img, 0, 0);
     return ctx.getImageData(0, 0, canvas.width, canvas.height);
   }
 
   function setButtonLoading(btn, isLoading, label) {
-    btn.classList.toggle('is-loading', isLoading);
+    btn.classList.toggle("is-loading", isLoading);
     btn.disabled = isLoading;
-    btn.setAttribute('aria-busy', String(isLoading));
-    if (label) btn.querySelector('.btn-text').textContent = label;
+    btn.setAttribute("aria-busy", String(isLoading));
+    if (label) btn.querySelector(".btn-text").textContent = label;
   }
 
   function downloadBlob(blob, filename) {
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
+    const a = document.createElement("a");
     a.href = url;
     a.download = filename;
     document.body.appendChild(a);
@@ -555,7 +611,7 @@
   }
 
   function buildOutputFilename(originalName) {
-    const base = (originalName || 'image').replace(/\.png$/i, '');
+    const base = (originalName || "image").replace(/\.png$/i, "");
     return `${base}-hidden.png`;
   }
 
@@ -566,46 +622,49 @@
   function setupDropzone(dropzoneEl, inputEl, onFile) {
     const openPicker = () => inputEl.click();
 
-    dropzoneEl.addEventListener('click', openPicker);
-    dropzoneEl.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' || e.key === ' ') {
+    dropzoneEl.addEventListener("click", openPicker);
+    dropzoneEl.addEventListener("keydown", (e) => {
+      if (e.key === "Enter" || e.key === " ") {
         e.preventDefault();
         openPicker();
       }
     });
 
-    ['dragenter', 'dragover'].forEach((evt) =>
+    ["dragenter", "dragover"].forEach((evt) =>
       dropzoneEl.addEventListener(evt, (e) => {
         e.preventDefault();
         e.stopPropagation();
-        dropzoneEl.classList.add('dropzone--active');
-      })
+        dropzoneEl.classList.add("dropzone--active");
+      }),
     );
-    ['dragleave', 'drop'].forEach((evt) =>
+    ["dragleave", "drop"].forEach((evt) =>
       dropzoneEl.addEventListener(evt, (e) => {
         e.preventDefault();
         e.stopPropagation();
-        dropzoneEl.classList.remove('dropzone--active');
-      })
+        dropzoneEl.classList.remove("dropzone--active");
+      }),
     );
-    dropzoneEl.addEventListener('drop', (e) => {
+    dropzoneEl.addEventListener("drop", (e) => {
       const file = e.dataTransfer.files && e.dataTransfer.files[0];
       if (file) onFile(file);
     });
 
-    inputEl.addEventListener('change', (e) => {
+    inputEl.addEventListener("change", (e) => {
       const file = e.target.files && e.target.files[0];
       if (file) onFile(file);
-      inputEl.value = ''; // allow re-selecting the same file later
+      inputEl.value = ""; // allow re-selecting the same file later
     });
   }
 
   function setupPasswordVisibilityToggle(button, input) {
-    button.addEventListener('click', () => {
-      const showing = input.type === 'text';
-      input.type = showing ? 'password' : 'text';
-      button.classList.toggle('is-active', !showing);
-      button.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+    button.addEventListener("click", () => {
+      const showing = input.type === "text";
+      input.type = showing ? "password" : "text";
+      button.classList.toggle("is-active", !showing);
+      button.setAttribute(
+        "aria-label",
+        showing ? "Show password" : "Hide password",
+      );
     });
   }
 
@@ -616,7 +675,7 @@
   async function handleHideFile(file) {
     try {
       validatePngFile(file);
-      hideDropzone.classList.add('is-loading');
+      hideDropzone.classList.add("is-loading");
 
       const img = await loadImageFromFile(file);
       const imageData = imageToImageData(img);
@@ -626,31 +685,38 @@
       state.hide.imageData = imageData;
 
       const rawCapacityBits = usableChannelCount(imageData);
-      state.hide.capacityBytes = Math.max(0, Math.floor(rawCapacityBits / 8) - HEADER_BYTES);
+      state.hide.capacityBytes = Math.max(
+        0,
+        Math.floor(rawCapacityBits / 8) - HEADER_BYTES,
+      );
 
       hidePreviewImg.src = URL.createObjectURL(file);
-      hidePreviewWrap.classList.remove('hidden');
-      hideDropzone.classList.add('hidden');
+      hidePreviewWrap.classList.remove("hidden");
+      hideDropzone.classList.add("hidden");
       hideImgDims.textContent = `${imageData.width} × ${imageData.height} px`;
       hideImgSize.textContent = formatBytes(file.size);
 
       recalcHideCapacity();
-      showToast('success', 'Image loaded', `${file.name} is ready — you can now type your message.`);
+      showToast(
+        "success",
+        "Image loaded",
+        `${file.name} is ready — you can now type your message.`,
+      );
     } catch (err) {
       handleStegoError(err);
     } finally {
-      hideDropzone.classList.remove('is-loading');
+      hideDropzone.classList.remove("is-loading");
     }
   }
 
   function resetHideImage() {
     state.hide.file = null;
-    state.hide.fileName = '';
+    state.hide.fileName = "";
     state.hide.imageData = null;
     state.hide.capacityBytes = 0;
-    hidePreviewWrap.classList.add('hidden');
-    hideDropzone.classList.remove('hidden');
-    hidePreviewImg.src = '';
+    hidePreviewWrap.classList.add("hidden");
+    hideDropzone.classList.remove("hidden");
+    hidePreviewImg.src = "";
     recalcHideCapacity();
   }
 
@@ -659,36 +725,43 @@
     const charCount = message.length;
     const byteCount = new TextEncoder().encode(message).length;
 
-    hideCharCount.textContent = `${charCount} character${charCount === 1 ? '' : 's'}`;
+    hideCharCount.textContent = `${charCount} character${charCount === 1 ? "" : "s"}`;
 
     const useEncryption = hideEncryptToggle.checked;
-    const overhead = useEncryption ? SALT_LENGTH + IV_LENGTH + GCM_TAG_LENGTH : 0;
+    const overhead = useEncryption
+      ? SALT_LENGTH + IV_LENGTH + GCM_TAG_LENGTH
+      : 0;
     const totalNeeded = byteCount + overhead;
     hideByteCount.textContent = `${formatBytes(totalNeeded)} to embed`;
 
     const hasImage = !!state.hide.imageData;
     if (!hasImage) {
-      hideCapacityFill.style.width = '0%';
-      hideCapacityFill.classList.remove('capacity-bar-fill--over');
-      hideCapacityTrack.setAttribute('aria-valuenow', '0');
-      hideCapacityHint.textContent = 'Upload an image to see how much you can hide.';
-      hideCapacityHint.classList.remove('hint-text--warn');
+      hideCapacityFill.style.width = "0%";
+      hideCapacityFill.classList.remove("capacity-bar-fill--over");
+      hideCapacityTrack.setAttribute("aria-valuenow", "0");
+      hideCapacityHint.textContent =
+        "Upload an image to see how much you can hide.";
+      hideCapacityHint.classList.remove("hint-text--warn");
       hideSubmitBtn.disabled = true;
       return;
     }
 
     const capacity = state.hide.capacityBytes;
-    const percent = capacity > 0 ? Math.min(100, (totalNeeded / capacity) * 100) : 100;
+    const percent =
+      capacity > 0 ? Math.min(100, (totalNeeded / capacity) * 100) : 100;
     const fits = capacity > 0 && totalNeeded <= capacity;
 
     hideCapacityFill.style.width = `${percent}%`;
-    hideCapacityFill.classList.toggle('capacity-bar-fill--over', !fits);
-    hideCapacityTrack.setAttribute('aria-valuenow', String(Math.round(percent)));
+    hideCapacityFill.classList.toggle("capacity-bar-fill--over", !fits);
+    hideCapacityTrack.setAttribute(
+      "aria-valuenow",
+      String(Math.round(percent)),
+    );
 
     hideCapacityHint.textContent = fits
       ? `${formatBytes(totalNeeded)} of ${formatBytes(capacity)} capacity used.`
       : `Message exceeds this image's capacity of ${formatBytes(capacity)}. Try a larger image or a shorter message.`;
-    hideCapacityHint.classList.toggle('hint-text--warn', !fits);
+    hideCapacityHint.classList.toggle("hint-text--warn", !fits);
 
     const passwordOk = !useEncryption || hidePasswordInput.value.length > 0;
     hideSubmitBtn.disabled = !(fits && byteCount > 0 && passwordOk);
@@ -696,75 +769,92 @@
 
   async function runHideFlow() {
     try {
-      if (!state.hide.imageData) throw new StegoError('NO_IMAGE', 'Please upload an image first.');
+      if (!state.hide.imageData)
+        throw new StegoError("NO_IMAGE", "Please upload an image first.");
 
       const message = hideMessageInput.value;
-      if (!message.trim()) throw new StegoError('EMPTY_MESSAGE', 'Please enter a message to hide.');
+      if (!message.trim())
+        throw new StegoError(
+          "EMPTY_MESSAGE",
+          "Please enter a message to hide.",
+        );
 
       const useEncryption = hideEncryptToggle.checked;
       const password = useEncryption ? hidePasswordInput.value : null;
       if (useEncryption && !password) {
-        throw new StegoError('NO_PASSWORD', 'Please enter a password, or turn off encryption.');
+        throw new StegoError(
+          "NO_PASSWORD",
+          "Please enter a password, or turn off encryption.",
+        );
       }
 
-      setButtonLoading(hideSubmitBtn, true, 'Encoding pixels…');
+      setButtonLoading(hideSubmitBtn, true, "Encoding pixels…");
 
       // Work on a clone so a second attempt never compounds onto already-modified data.
       const working = new ImageData(
         new Uint8ClampedArray(state.hide.imageData.data),
         state.hide.imageData.width,
-        state.hide.imageData.height
+        state.hide.imageData.height,
       );
 
       await encodeMessageIntoImageData(working, message, password);
       await wait(350); // keeps the loading state perceivable, even on tiny images
 
-      setButtonLoading(hideSubmitBtn, true, 'Preparing PNG…');
-      const outCanvas = document.createElement('canvas');
+      setButtonLoading(hideSubmitBtn, true, "Preparing PNG…");
+      const outCanvas = document.createElement("canvas");
       outCanvas.width = working.width;
       outCanvas.height = working.height;
-      outCanvas.getContext('2d').putImageData(working, 0, 0);
+      outCanvas.getContext("2d").putImageData(working, 0, 0);
 
       outCanvas.toBlob((blob) => {
         if (!blob) {
-          handleStegoError(new StegoError('DECODE_FAILED', 'The image could not be generated. Please try again.'));
-          setButtonLoading(hideSubmitBtn, false, 'Create Hidden Image');
+          handleStegoError(
+            new StegoError(
+              "DECODE_FAILED",
+              "The image could not be generated. Please try again.",
+            ),
+          );
+          setButtonLoading(hideSubmitBtn, false, "Create Hidden Image");
           return;
         }
         downloadBlob(blob, buildOutputFilename(state.hide.fileName));
-        setButtonLoading(hideSubmitBtn, true, 'Downloaded ✓');
-        showToast('success', 'Hidden image created', 'Your image downloaded with the secret message embedded inside it.');
+        setButtonLoading(hideSubmitBtn, true, "Downloaded ✓");
+        showToast(
+          "success",
+          "Hidden image created",
+          "Your image downloaded with the secret message embedded inside it.",
+        );
         setTimeout(() => {
-          setButtonLoading(hideSubmitBtn, false, 'Create Hidden Image');
+          setButtonLoading(hideSubmitBtn, false, "Create Hidden Image");
           recalcHideCapacity();
         }, 1100);
-      }, 'image/png');
+      }, "image/png");
     } catch (err) {
       handleStegoError(err);
-      setButtonLoading(hideSubmitBtn, false, 'Create Hidden Image');
+      setButtonLoading(hideSubmitBtn, false, "Create Hidden Image");
       recalcHideCapacity();
     }
   }
 
   function initHideTab() {
     setupDropzone(hideDropzone, hideFileInput, handleHideFile);
-    hideRemoveImg.addEventListener('click', resetHideImage);
-    hideMessageInput.addEventListener('input', recalcHideCapacity);
+    hideRemoveImg.addEventListener("click", resetHideImage);
+    hideMessageInput.addEventListener("input", recalcHideCapacity);
 
-    hideEncryptToggle.addEventListener('change', () => {
-      hidePasswordWrap.classList.toggle('hidden', !hideEncryptToggle.checked);
+    hideEncryptToggle.addEventListener("change", () => {
+      hidePasswordWrap.classList.toggle("hidden", !hideEncryptToggle.checked);
       recalcHideCapacity();
     });
-    hidePasswordInput.addEventListener('input', recalcHideCapacity);
+    hidePasswordInput.addEventListener("input", recalcHideCapacity);
     setupPasswordVisibilityToggle(hidePasswordVisibility, hidePasswordInput);
 
     if (!hasWebCrypto) {
       hideEncryptToggle.disabled = true;
-      hideEncryptToggle.closest('.toggle-row').title =
-        'Password encryption needs the Web Crypto API, which is not available in this browser.';
+      hideEncryptToggle.closest(".toggle-row").title =
+        "Password encryption needs the Web Crypto API, which is not available in this browser.";
     }
 
-    hideSubmitBtn.addEventListener('click', runHideFlow);
+    hideSubmitBtn.addEventListener("click", runHideFlow);
     recalcHideCapacity();
   }
 
@@ -775,7 +865,7 @@
   async function handleRevealFile(file) {
     try {
       validatePngFile(file);
-      revealDropzone.classList.add('is-loading');
+      revealDropzone.classList.add("is-loading");
 
       const img = await loadImageFromFile(file);
       const imageData = imageToImageData(img);
@@ -784,44 +874,44 @@
       state.reveal.imageData = imageData;
 
       revealPreviewImg.src = URL.createObjectURL(file);
-      revealPreviewWrap.classList.remove('hidden');
-      revealDropzone.classList.add('hidden');
+      revealPreviewWrap.classList.remove("hidden");
+      revealDropzone.classList.add("hidden");
       revealImgDims.textContent = `${imageData.width} × ${imageData.height} px`;
       revealImgSize.textContent = formatBytes(file.size);
 
-      revealOutputWrap.classList.add('hidden');
+      revealOutputWrap.classList.add("hidden");
       revealSubmitBtn.disabled = false;
 
-      showToast('success', 'Image loaded', `${file.name} is ready to decode.`);
+      showToast("success", "Image loaded", `${file.name} is ready to decode.`);
     } catch (err) {
       handleStegoError(err);
     } finally {
-      revealDropzone.classList.remove('is-loading');
+      revealDropzone.classList.remove("is-loading");
     }
   }
 
   function resetRevealImage() {
     state.reveal.file = null;
     state.reveal.imageData = null;
-    state.reveal.lastMessage = '';
-    revealPreviewWrap.classList.add('hidden');
-    revealDropzone.classList.remove('hidden');
-    revealPreviewImg.src = '';
-    revealOutputWrap.classList.add('hidden');
+    state.reveal.lastMessage = "";
+    revealPreviewWrap.classList.add("hidden");
+    revealDropzone.classList.remove("hidden");
+    revealPreviewImg.src = "";
+    revealOutputWrap.classList.add("hidden");
     revealSubmitBtn.disabled = true;
   }
 
   /** Types the decoded message out while a neon scanline sweeps the terminal — the app's signature moment. */
   async function typewriterReveal(text) {
-    revealOutputWrap.classList.remove('hidden');
-    revealOutputText.textContent = '';
+    revealOutputWrap.classList.remove("hidden");
+    revealOutputText.textContent = "";
 
     if (prefersReducedMotion || text.length === 0) {
       revealOutputText.textContent = text;
       return;
     }
 
-    revealOutputWrap.classList.add('scanning');
+    revealOutputWrap.classList.add("scanning");
     const chars = Array.from(text); // iterate by Unicode code point, not UTF-16 unit
     const perCharDelay = chars.length > 400 ? 4 : chars.length > 150 ? 9 : 16;
 
@@ -829,40 +919,52 @@
       revealOutputText.textContent += chars[i];
       if (i % 2 === 0) await wait(perCharDelay);
     }
-    revealOutputWrap.classList.remove('scanning');
+    revealOutputWrap.classList.remove("scanning");
   }
 
   async function runRevealFlow() {
     try {
-      if (!state.reveal.imageData) throw new StegoError('NO_IMAGE', 'Please upload an image first.');
+      if (!state.reveal.imageData)
+        throw new StegoError("NO_IMAGE", "Please upload an image first.");
 
-      setButtonLoading(revealSubmitBtn, true, 'Scanning pixels…');
+      setButtonLoading(revealSubmitBtn, true, "Scanning pixels…");
       await wait(300);
 
       const password = revealPasswordInput.value || null;
-      if (password) setButtonLoading(revealSubmitBtn, true, 'Decrypting…');
+      if (password) setButtonLoading(revealSubmitBtn, true, "Decrypting…");
 
-      const message = await decodeMessageFromImageData(state.reveal.imageData, password);
+      const message = await decodeMessageFromImageData(
+        state.reveal.imageData,
+        password,
+      );
       state.reveal.lastMessage = message;
 
       await typewriterReveal(message);
-      showToast('success', 'Message revealed', 'The hidden message was decoded successfully.');
+      showToast(
+        "success",
+        "Message revealed",
+        "The hidden message was decoded successfully.",
+      );
     } catch (err) {
-      revealOutputWrap.classList.add('hidden');
+      revealOutputWrap.classList.add("hidden");
       handleStegoError(err);
-      if (err instanceof StegoError && err.code === 'PASSWORD_REQUIRED') {
+      if (err instanceof StegoError && err.code === "PASSWORD_REQUIRED") {
         revealPasswordInput.focus();
       }
     } finally {
-      setButtonLoading(revealSubmitBtn, false, 'Reveal Message');
+      setButtonLoading(revealSubmitBtn, false, "Reveal Message");
     }
   }
 
   async function copyRevealedMessage() {
-    const text = state.reveal.lastMessage || '';
+    const text = state.reveal.lastMessage || "";
     try {
       await navigator.clipboard.writeText(text);
-      showToast('success', 'Copied', 'The message was copied to your clipboard.');
+      showToast(
+        "success",
+        "Copied",
+        "The message was copied to your clipboard.",
+      );
     } catch (_) {
       // Fallback for browsers/contexts without Clipboard API permission
       try {
@@ -871,19 +973,30 @@
         const selection = window.getSelection();
         selection.removeAllRanges();
         selection.addRange(range);
-        showToast('info', 'Copy manually', 'Clipboard access was blocked — the text is selected, press Ctrl/Cmd+C.');
+        showToast(
+          "info",
+          "Copy manually",
+          "Clipboard access was blocked — the text is selected, press Ctrl/Cmd+C.",
+        );
       } catch (_) {
-        showToast('error', 'Copy failed', 'Could not access the clipboard in this browser.');
+        showToast(
+          "error",
+          "Copy failed",
+          "Could not access the clipboard in this browser.",
+        );
       }
     }
   }
 
   function initRevealTab() {
     setupDropzone(revealDropzone, revealFileInput, handleRevealFile);
-    revealRemoveImg.addEventListener('click', resetRevealImage);
-    setupPasswordVisibilityToggle(revealPasswordVisibility, revealPasswordInput);
-    revealSubmitBtn.addEventListener('click', runRevealFlow);
-    revealCopyBtn.addEventListener('click', copyRevealedMessage);
+    revealRemoveImg.addEventListener("click", resetRevealImage);
+    setupPasswordVisibilityToggle(
+      revealPasswordVisibility,
+      revealPasswordInput,
+    );
+    revealSubmitBtn.addEventListener("click", runRevealFlow);
+    revealCopyBtn.addEventListener("click", copyRevealedMessage);
   }
 
   /* ----------------------------------------------------------------

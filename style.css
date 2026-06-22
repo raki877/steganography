@@ -864,6 +864,26 @@ img{ max-width: 100%; display: block; }
 }
 
 /* ----------------------------------------------------------------------
+   18. ALERTS
+   ---------------------------------------------------------------------- */
+.alert{
+  margin-bottom: 1.2rem;
+  padding: 0.9rem 1.1rem;
+  border-radius: var(--radius-md);
+  font-size: 0.9rem;
+  line-height: 1.5;
+  border-left: 4px solid;
+}
+.alert--warning{
+  background: rgba(255, 184, 77, 0.12);
+  border-left-color: var(--neon-amber);
+  color: var(--text-primary);
+}
+.alert strong{
+  color: var(--neon-amber);
+}
+
+/* ----------------------------------------------------------------------
    19. REDUCED MOTION
    ---------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce){
