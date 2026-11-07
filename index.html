@@ -8,7 +8,7 @@
     </title>
     <meta
       name="description"
-      content="Hide secret text messages inside ordinary PNG images using LSB steganography, then reveal them again. Optional AES-256 password protection. 100% client-side, nothing ever leaves your browser."
+      content="Hide secret text messages inside ordinary images using LSB and compression-proof steganography, then reveal them again. Optional AES-256 password protection. 100% client-side, nothing ever leaves your browser."
     />
 
     <!-- Fonts: Orbitron for display/headings, Inter for UI text, JetBrains Mono for data/terminal readouts -->
@@ -89,7 +89,7 @@
             Steganography <span class="brand-title-accent">Studio</span>
           </h1>
           <p class="brand-subtitle">
-            Hide secret messages inside ordinary-looking PNG images, then reveal
+            Hide secret messages inside ordinary-looking images, then reveal
             them again — entirely inside your browser.
           </p>
         </div>
@@ -200,7 +200,7 @@
               class="dropzone"
               tabindex="0"
               role="button"
-              aria-label="Upload a PNG image to hide a message inside"
+              aria-label="Upload an image to hide a message inside"
             >
               <svg
                 class="dropzone-icon"
@@ -218,9 +218,9 @@
                 <path d="M12 21v-9"></path>
                 <path d="M9 15l3-3 3 3"></path>
               </svg>
-              <p class="dropzone-title">Drag &amp; drop a PNG image</p>
+              <p class="dropzone-title">Drag &amp; drop an image</p>
               <p class="dropzone-hint">
-                or click to browse · PNG only · up to 25&nbsp;MB
+                or click to browse · PNG, JPG or WebP · up to 25&nbsp;MB
               </p>
               <input
                 type="file"
@@ -301,6 +301,36 @@
             </div>
             <p id="hideCapacityHint" class="hint-text">
               Upload an image to see how much you can hide.
+            </p>
+
+            <div class="toggle-row">
+              <label class="switch">
+                <input type="checkbox" id="hideRobustToggle" checked />
+                <span class="switch-track" aria-hidden="true"
+                  ><span class="switch-thumb"></span
+                ></span>
+              </label>
+              <label for="hideRobustToggle" class="toggle-label">
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="1.8"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                  aria-hidden="true"
+                >
+                  <path d="M12 3l8 3v6c0 4.5-3.2 8-8 9-4.8-1-8-4.5-8-9V6l8-3z"></path>
+                  <path d="M9 12l2 2 4-4"></path>
+                </svg>
+                WhatsApp-safe mode <span class="badge">survives compression</span>
+              </label>
+            </div>
+            <p class="hint-text">
+              Keeps the message readable after WhatsApp, Instagram or Telegram
+              re-compress the photo. The image is shrunk to max 1280&nbsp;px and holds
+              less text (a few hundred characters). Turn off for maximum capacity when
+              sending as a file/document.
             </p>
 
             <div class="toggle-row">
@@ -419,7 +449,7 @@
         tabindex="0"
       >
         <div class="alert alert--warning" role="note">
-          <strong>⚠️ File sharing tip:</strong> WhatsApp, Telegram, and social media compress images, which destroys hidden data. Share the PNG file directly via email, file transfer, or cloud storage instead.
+          <strong>💡 Sharing tip:</strong> Images made with <em>WhatsApp-safe mode</em> can be revealed even after WhatsApp or social media compress them — save the received photo and drop it here. Images made without it only survive when sent as a file/document (WhatsApp: attach → Document).
         </div>
         <div class="panel-grid">
           <!-- Image upload column -->
@@ -448,7 +478,7 @@
               <p class="dropzone-title">
                 Drag &amp; drop the hidden-message image
               </p>
-              <p class="dropzone-hint">or click to browse · PNG only</p>
+              <p class="dropzone-hint">or click to browse · PNG, JPG or WebP</p>
               <input
                 type="file"
                 id="revealFileInput"
