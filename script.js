@@ -175,7 +175,12 @@
    * Encodes `message` into `imageData` in place.
    * If `password` is truthy, the message is AES-256-GCM encrypted first.
    */
-  async function encodeMessageIntoImageData(imageData, message, password) {
+  async function encodeMessageIntoImageData(
+    imageData,
+    message,
+    password,
+    robust = false,
+  ) {
     const encoder = new TextEncoder();
     let payloadBytes;
     let flag = 0;
@@ -185,6 +190,12 @@
       flag = 1;
     } else {
       payloadBytes = encoder.encode(message);
+    }
+
+    // Robust mode: survives JPEG re-compression (WhatsApp, Instagram, ...).
+    if (robust) {
+      robustEmbed(imageData, payloadBytes, flag);
+      return;
     }
 
     const header = new Uint8Array(HEADER_BYTES);
@@ -217,38 +228,38 @@
     const capacity = usableChannelCount(imageData);
     const headerBitCount = HEADER_BYTES * 8;
 
-    if (capacity < headerBitCount) {
-      throw new StegoError(
-        "NOT_STEGO_IMAGE",
-        "This image is too small to contain a hidden message.",
-      );
+    // 1) Classic lossless LSB message?
+    if (capacity >= headerBitCount) {
+      const headerBits = extractBitsFromImageData(imageData, headerBitCount);
+      const headerBytes = bitsToBytes(headerBits);
+      if (bytesToUint32(headerBytes, 0) === HEADER_MAGIC) {
+        const flag = headerBytes[4];
+        const payloadLength = bytesToUint32(headerBytes, 5);
+        const totalBitsNeeded = headerBitCount + payloadLength * 8;
+        if (totalBitsNeeded > capacity) {
+          throw new StegoError(
+            "CORRUPTED",
+            "The hidden data looks incomplete or corrupted.",
+          );
+        }
+        const allBits = extractBitsFromImageData(imageData, totalBitsNeeded);
+        const payloadBytes = bitsToBytes(allBits.slice(headerBitCount));
+        return finishDecode(flag, payloadBytes, password);
+      }
     }
 
-    const headerBits = extractBitsFromImageData(imageData, headerBitCount);
-    const headerBytes = bitsToBytes(headerBits);
-    const magic = bytesToUint32(headerBytes, 0);
+    // 2) Robust message (survives WhatsApp / JPEG compression)?
+    const robust = robustExtract(imageData);
+    if (robust) return finishDecode(robust.flag, robust.payload, password);
 
-    if (magic !== HEADER_MAGIC) {
-      throw new StegoError(
-        "NOT_STEGO_IMAGE",
-        "No hidden message was found here — this image was not created with Steganography Studio.",
-      );
-    }
+    throw new StegoError(
+      "NOT_STEGO_IMAGE",
+      "No hidden message was found. This image was not created with Steganography Studio, or it was altered too much (resized, cropped, or edited) after the message was hidden.",
+    );
+  }
 
-    const flag = headerBytes[4];
-    const payloadLength = bytesToUint32(headerBytes, 5);
-    const totalBitsNeeded = headerBitCount + payloadLength * 8;
-
-    if (totalBitsNeeded > capacity) {
-      throw new StegoError(
-        "CORRUPTED",
-        "The hidden data looks incomplete or corrupted.",
-      );
-    }
-
-    const allBits = extractBitsFromImageData(imageData, totalBitsNeeded);
-    const payloadBytes = bitsToBytes(allBits.slice(headerBitCount));
-
+  /** Shared last step: decrypt if needed and turn bytes into text. */
+  async function finishDecode(flag, payloadBytes, password) {
     if (flag === 1) {
       if (!password) {
         throw new StegoError(
@@ -267,8 +278,438 @@
       }
       return new TextDecoder().decode(plainBytes);
     }
-
     return new TextDecoder().decode(payloadBytes);
+  }
+
+  /* ----------------------------------------------------------------
+     4b. ROBUST ENGINE  (survives JPEG re-compression, e.g. WhatsApp)
+     ----------------------------------------------------------------
+     Plain LSB hiding is destroyed by any lossy re-compression. This engine
+     instead hides each bit in the *average brightness* of an 8x8 pixel block
+     (quantisation index modulation, QIM). A block's average brightness barely
+     changes when JPEG squeezes the image, so the bits survive. On top of that:
+       - every bit is stored several times in pseudo-randomly scattered blocks
+         and the copies are combined by soft voting,
+       - the data is protected with Reed-Solomon error correction.
+     ---------------------------------------------------------------- */
+
+  const ROBUST_BLOCK = 8;
+  const ROBUST_STEP = 12; // QIM lattice spacing (brightness levels)
+  const ROBUST_MAX_DIM = 1280; // WhatsApp "standard" resizes anything bigger
+  const ROBUST_MAGIC = [0x53, 0x42]; // "SB"
+  const ROBUST_HDR_DATA = 6; // magic(2) + flag(1) + length(3)
+  const ROBUST_HDR_PARITY = 16;
+  const ROBUST_HDR_REPEAT = 9;
+  const ROBUST_RS_CHUNK = 200; // data bytes per Reed-Solomon block
+  const ROBUST_RS_PARITY = 32; // parity bytes per block (fixes 16 bad bytes)
+  const ROBUST_MIN_REPEAT = 3;
+  const ROBUST_MAX_REPEAT = 15;
+  const ROBUST_HDR_BLOCKS =
+    (ROBUST_HDR_DATA + ROBUST_HDR_PARITY) * 8 * ROBUST_HDR_REPEAT;
+
+  /* ---- Reed-Solomon over GF(256) (primitive polynomial 0x11d) ---- */
+  const GF_EXP = new Uint8Array(512);
+  const GF_LOG = new Uint8Array(256);
+  (function initGF() {
+    let x = 1;
+    for (let i = 0; i < 255; i++) {
+      GF_EXP[i] = x;
+      GF_LOG[x] = i;
+      x <<= 1;
+      if (x & 0x100) x ^= 0x11d;
+    }
+    for (let i = 255; i < 512; i++) GF_EXP[i] = GF_EXP[i - 255];
+  })();
+
+  const gfMul = (a, b) => (a && b ? GF_EXP[GF_LOG[a] + GF_LOG[b]] : 0);
+  const gfDiv = (a, b) => (a ? GF_EXP[(GF_LOG[a] + 255 - GF_LOG[b]) % 255] : 0);
+  const gfInv = (a) => GF_EXP[255 - GF_LOG[a]];
+
+  const rsGenCache = {};
+  function rsGenerator(nsym) {
+    if (rsGenCache[nsym]) return rsGenCache[nsym];
+    let g = [1]; // highest degree first
+    for (let i = 0; i < nsym; i++) {
+      const next = new Array(g.length + 1).fill(0);
+      for (let j = 0; j < g.length; j++) {
+        next[j] ^= g[j];
+        next[j + 1] ^= gfMul(g[j], GF_EXP[i]);
+      }
+      g = next;
+    }
+    return (rsGenCache[nsym] = g);
+  }
+
+  /** Returns data followed by `nsym` parity bytes. */
+  function rsEncode(data, nsym) {
+    const gen = rsGenerator(nsym);
+    const out = new Uint8Array(data.length + nsym);
+    out.set(data, 0);
+    for (let i = 0; i < data.length; i++) {
+      const coef = out[i];
+      if (coef !== 0) {
+        for (let j = 1; j < gen.length; j++) out[i + j] ^= gfMul(gen[j], coef);
+      }
+    }
+    out.set(data, 0); // restore data (the loop above used it as scratch)
+    return out;
+  }
+
+  /** Corrects up to nsym/2 wrong bytes. Returns the data part, or null if hopeless. */
+  function rsDecode(received, nsym) {
+    const n = received.length;
+    const r = Uint8Array.from(received);
+
+    // syndromes S_j = r(alpha^j)
+    const synd = new Array(nsym).fill(0);
+    let clean = true;
+    for (let j = 0; j < nsym; j++) {
+      let s = 0;
+      for (let i = 0; i < n; i++) s = gfMul(s, GF_EXP[j]) ^ r[i];
+      synd[j] = s;
+      if (s) clean = false;
+    }
+    if (clean) return r.slice(0, n - nsym);
+
+    // Berlekamp-Massey -> error locator (lowest degree first)
+    let C = [1];
+    let B = [1];
+    let L = 0;
+    let m = 1;
+    let b = 1;
+    for (let i = 0; i < nsym; i++) {
+      let d = synd[i];
+      for (let k = 1; k <= L; k++) d ^= gfMul(C[k] || 0, synd[i - k]);
+      if (d === 0) {
+        m++;
+      } else if (2 * L <= i) {
+        const T = C.slice();
+        const coef = gfDiv(d, b);
+        while (C.length < B.length + m) C.push(0);
+        for (let k = 0; k < B.length; k++) C[k + m] ^= gfMul(coef, B[k]);
+        L = i + 1 - L;
+        B = T;
+        b = d;
+        m = 1;
+      } else {
+        const coef = gfDiv(d, b);
+        while (C.length < B.length + m) C.push(0);
+        for (let k = 0; k < B.length; k++) C[k + m] ^= gfMul(coef, B[k]);
+        m++;
+      }
+    }
+    while (C.length > 1 && C[C.length - 1] === 0) C.pop();
+    if (L * 2 > nsym || C.length - 1 !== L) return null;
+
+    // Chien search: error at array index p has locator X = alpha^(n-1-p)
+    const errPos = [];
+    for (let p = 0; p < n; p++) {
+      const xInvExp = (255 - ((n - 1 - p) % 255)) % 255; // alpha^-(n-1-p)
+      let v = 0;
+      for (let k = 0; k < C.length; k++) {
+        v ^= gfMul(C[k], GF_EXP[(xInvExp * k) % 255]);
+      }
+      if (v === 0) errPos.push(p);
+    }
+    if (errPos.length !== L) return null;
+
+    // Error evaluator: Omega = S(x) * Lambda(x) mod x^nsym
+    const omega = new Array(nsym).fill(0);
+    for (let i = 0; i < nsym; i++) {
+      for (let k = 0; k < C.length && k <= i; k++) {
+        omega[i] ^= gfMul(C[k], synd[i - k]);
+      }
+    }
+
+    // Forney: e = X * Omega(X^-1) / Lambda'(X^-1)
+    for (const p of errPos) {
+      const xExp = (n - 1 - p) % 255;
+      const xInvExp = (255 - xExp) % 255;
+      let om = 0;
+      for (let k = 0; k < omega.length; k++) {
+        om ^= gfMul(omega[k], GF_EXP[(xInvExp * k) % 255]);
+      }
+      let dl = 0;
+      for (let k = 1; k < C.length; k += 2) {
+        dl ^= gfMul(C[k], GF_EXP[(xInvExp * (k - 1)) % 255]);
+      }
+      if (dl === 0) return null;
+      r[p] ^= gfDiv(gfMul(GF_EXP[xExp], om), dl);
+    }
+
+    // verify
+    for (let j = 0; j < nsym; j++) {
+      let s = 0;
+      for (let i = 0; i < n; i++) s = gfMul(s, GF_EXP[j]) ^ r[i];
+      if (s) return null;
+    }
+    return r.slice(0, n - nsym);
+  }
+
+  /** Splits data into chunks and RS-protects each one. */
+  function rsEncodeChunks(data) {
+    const chunks = [];
+    for (let off = 0; off < data.length; off += ROBUST_RS_CHUNK) {
+      chunks.push(
+        rsEncode(data.slice(off, off + ROBUST_RS_CHUNK), ROBUST_RS_PARITY),
+      );
+    }
+    const out = new Uint8Array(robustCodedLength(data.length));
+    let pos = 0;
+    for (const c of chunks) {
+      out.set(c, pos);
+      pos += c.length;
+    }
+    return out;
+  }
+
+  function rsDecodeChunks(coded, dataLength) {
+    const out = new Uint8Array(dataLength);
+    let inPos = 0;
+    let outPos = 0;
+    while (outPos < dataLength) {
+      const k = Math.min(ROBUST_RS_CHUNK, dataLength - outPos);
+      const block = coded.slice(inPos, inPos + k + ROBUST_RS_PARITY);
+      const fixed = rsDecode(block, ROBUST_RS_PARITY);
+      if (!fixed) return null;
+      out.set(fixed, outPos);
+      inPos += k + ROBUST_RS_PARITY;
+      outPos += k;
+    }
+    return out;
+  }
+
+  function robustCodedLength(dataLength) {
+    return dataLength + ROBUST_RS_PARITY * Math.ceil(dataLength / ROBUST_RS_CHUNK);
+  }
+
+  /* ---- Block geometry ---- */
+
+  function robustBlockCount(width, height) {
+    return Math.floor(width / ROBUST_BLOCK) * Math.floor(height / ROBUST_BLOCK);
+  }
+
+  /** Largest payload (bytes) that fits, using at least ROBUST_MIN_REPEAT copies. */
+  function robustCapacityBytes(width, height) {
+    const avail = robustBlockCount(width, height) - ROBUST_HDR_BLOCKS;
+    if (avail <= 0) return 0;
+    const codedMax = Math.floor(avail / (8 * ROBUST_MIN_REPEAT));
+    let k = Math.max(0, codedMax - ROBUST_RS_PARITY * Math.ceil(codedMax / ROBUST_RS_CHUNK));
+    while (k > 0 && robustCodedLength(k) > codedMax) k--;
+    return Math.min(k, 0xffffff);
+  }
+
+  /** Deterministic pseudo-random order of the blocks (same for hide and reveal). */
+  function robustBlockOrder(count) {
+    const order = new Uint32Array(count);
+    for (let i = 0; i < count; i++) order[i] = i;
+    let seed = 0x5eedb10c >>> 0;
+    const rand = () => {
+      seed = (seed + 0x6d2b79f5) >>> 0;
+      let t = seed;
+      t = Math.imul(t ^ (t >>> 15), t | 1);
+      t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+    };
+    for (let i = count - 1; i > 0; i--) {
+      const j = Math.floor(rand() * (i + 1));
+      const tmp = order[i];
+      order[i] = order[j];
+      order[j] = tmp;
+    }
+    return order;
+  }
+
+  function robustRepeatFor(codedBytes, blockCount) {
+    const avail = blockCount - ROBUST_HDR_BLOCKS;
+    return Math.min(ROBUST_MAX_REPEAT, Math.floor(avail / (codedBytes * 8)));
+  }
+
+  /* ---- Per-block brightness ---- */
+
+  function blockLuma(data, width, bx, by) {
+    let sum = 0;
+    for (let y = 0; y < ROBUST_BLOCK; y++) {
+      let idx = ((by * ROBUST_BLOCK + y) * width + bx * ROBUST_BLOCK) * 4;
+      for (let x = 0; x < ROBUST_BLOCK; x++, idx += 4) {
+        sum += 0.299 * data[idx] + 0.587 * data[idx + 1] + 0.114 * data[idx + 2];
+      }
+    }
+    return sum / (ROBUST_BLOCK * ROBUST_BLOCK);
+  }
+
+  /** Brightness of the block after adding `shift` to R, G and B (with clamping). */
+  function shiftedLuma(data, width, bx, by, shift) {
+    let sum = 0;
+    for (let y = 0; y < ROBUST_BLOCK; y++) {
+      let idx = ((by * ROBUST_BLOCK + y) * width + bx * ROBUST_BLOCK) * 4;
+      for (let x = 0; x < ROBUST_BLOCK; x++, idx += 4) {
+        const r = Math.min(255, Math.max(0, data[idx] + shift));
+        const g = Math.min(255, Math.max(0, data[idx + 1] + shift));
+        const b = Math.min(255, Math.max(0, data[idx + 2] + shift));
+        sum += 0.299 * r + 0.587 * g + 0.114 * b;
+      }
+    }
+    return sum / (ROBUST_BLOCK * ROBUST_BLOCK);
+  }
+
+  function applyShift(data, width, bx, by, shift) {
+    for (let y = 0; y < ROBUST_BLOCK; y++) {
+      let idx = ((by * ROBUST_BLOCK + y) * width + bx * ROBUST_BLOCK) * 4;
+      for (let x = 0; x < ROBUST_BLOCK; x++, idx += 4) {
+        data[idx] = Math.min(255, Math.max(0, data[idx] + shift));
+        data[idx + 1] = Math.min(255, Math.max(0, data[idx + 1] + shift));
+        data[idx + 2] = Math.min(255, Math.max(0, data[idx + 2] + shift));
+      }
+    }
+  }
+
+  /** Lattice point for `bit` nearest to `m`, offset by `k` lattice steps. */
+  function qimTarget(m, bit, k) {
+    const half = bit ? ROBUST_STEP / 2 : 0;
+    return (Math.round((m - half) / ROBUST_STEP) + k) * ROBUST_STEP + half;
+  }
+
+  /** Writes one bit into one block by nudging its brightness onto the bit's lattice. */
+  function embedBitInBlock(data, width, bx, by, bit) {
+    const m = blockLuma(data, width, bx, by);
+    let best = 0;
+    let bestErr = Infinity;
+    for (const k of [0, 1, -1]) {
+      const shift = Math.round(qimTarget(m, bit, k) - m);
+      const achieved = shiftedLuma(data, width, bx, by, shift);
+      // error measured on the lattice of the wanted bit
+      const err = Math.abs(achieved - qimTarget(achieved, bit, 0));
+      if (err < bestErr - 1e-9) {
+        bestErr = err;
+        best = shift;
+        if (err < 1) break;
+      }
+    }
+    if (best !== 0) applyShift(data, width, bx, by, best);
+  }
+
+  /** Soft value in [-1, 1]: positive => bit 1, negative => bit 0. */
+  function qimSoft(m) {
+    const d0 = Math.abs(m - Math.round(m / ROBUST_STEP) * ROBUST_STEP);
+    const h = ROBUST_STEP / 2;
+    const d1 = Math.abs(m - (Math.round((m - h) / ROBUST_STEP) * ROBUST_STEP + h));
+    return (d0 - d1) / (ROBUST_STEP / 4);
+  }
+
+  function bytesFromSoft(soft) {
+    const out = new Uint8Array(Math.floor(soft.length / 8));
+    for (let i = 0; i < out.length; i++) {
+      let v = 0;
+      for (let b = 0; b < 8; b++) v = (v << 1) | (soft[i * 8 + b] > 0 ? 1 : 0);
+      out[i] = v;
+    }
+    return out;
+  }
+
+  /* ---- Public robust API ---- */
+
+  /** Mutates imageData in place. `flag` bit0 = payload is AES encrypted. */
+  function robustEmbed(imageData, payloadBytes, flag) {
+    const { width, height, data } = imageData;
+    const nbx = Math.floor(width / ROBUST_BLOCK);
+    const total = robustBlockCount(width, height);
+
+    if (payloadBytes.length > robustCapacityBytes(width, height)) {
+      throw new StegoError(
+        "CAPACITY_EXCEEDED",
+        "The message is larger than this image can hold in WhatsApp-safe mode.",
+      );
+    }
+
+    const len = payloadBytes.length;
+    const header = new Uint8Array([
+      ROBUST_MAGIC[0],
+      ROBUST_MAGIC[1],
+      flag & 0xff,
+      (len >>> 16) & 0xff,
+      (len >>> 8) & 0xff,
+      len & 0xff,
+    ]);
+    const headerCoded = rsEncode(header, ROBUST_HDR_PARITY);
+    const payloadCoded = rsEncodeChunks(payloadBytes);
+    const repeat = robustRepeatFor(payloadCoded.length, total);
+    const order = robustBlockOrder(total);
+
+    const put = (slot, bit) => {
+      const blockIndex = order[slot];
+      embedBitInBlock(data, width, blockIndex % nbx, Math.floor(blockIndex / nbx), bit);
+    };
+
+    // header: every bit repeated ROBUST_HDR_REPEAT times
+    let slot = 0;
+    for (let i = 0; i < headerCoded.length * 8; i++) {
+      const bit = (headerCoded[i >> 3] >> (7 - (i & 7))) & 1;
+      for (let c = 0; c < ROBUST_HDR_REPEAT; c++) put(slot++, bit);
+    }
+    // payload: every bit repeated `repeat` times
+    for (let i = 0; i < payloadCoded.length * 8; i++) {
+      const bit = (payloadCoded[i >> 3] >> (7 - (i & 7))) & 1;
+      for (let c = 0; c < repeat; c++) put(slot++, bit);
+    }
+  }
+
+  /**
+   * Looks for a robust-mode message. Returns { flag, payload } or null when the
+   * image has no such header at all. Throws CORRUPTED if the header is present
+   * but the body could not be recovered.
+   */
+  function robustExtract(imageData) {
+    const { width, height, data } = imageData;
+    const nbx = Math.floor(width / ROBUST_BLOCK);
+    const total = robustBlockCount(width, height);
+    if (total <= ROBUST_HDR_BLOCKS) return null;
+
+    const order = robustBlockOrder(total);
+    const lumaCache = new Map();
+    const softAt = (slot) => {
+      const blockIndex = order[slot];
+      let v = lumaCache.get(blockIndex);
+      if (v === undefined) {
+        v = qimSoft(blockLuma(data, width, blockIndex % nbx, Math.floor(blockIndex / nbx)));
+        lumaCache.set(blockIndex, v);
+      }
+      return v;
+    };
+
+    // header
+    const hdrBits = (ROBUST_HDR_DATA + ROBUST_HDR_PARITY) * 8;
+    const hdrSoft = new Float32Array(hdrBits);
+    let slot = 0;
+    for (let i = 0; i < hdrBits; i++) {
+      let s = 0;
+      for (let c = 0; c < ROBUST_HDR_REPEAT; c++) s += softAt(slot++);
+      hdrSoft[i] = s;
+    }
+    const header = rsDecode(bytesFromSoft(hdrSoft), ROBUST_HDR_PARITY);
+    if (!header || header[0] !== ROBUST_MAGIC[0] || header[1] !== ROBUST_MAGIC[1]) {
+      return null;
+    }
+    const flag = header[2];
+    const len = (header[3] << 16) | (header[4] << 8) | header[5];
+
+    // payload
+    const codedLen = robustCodedLength(len);
+    const repeat = robustRepeatFor(codedLen, total);
+    if (len === 0 || repeat < ROBUST_MIN_REPEAT) {
+      throw new StegoError("CORRUPTED", "The hidden data looks incomplete or corrupted.");
+    }
+    const soft = new Float32Array(codedLen * 8);
+    for (let i = 0; i < soft.length; i++) {
+      let s = 0;
+      for (let c = 0; c < repeat; c++) s += softAt(slot++);
+      soft[i] = s;
+    }
+    const payload = rsDecodeChunks(bytesFromSoft(soft), len);
+    if (!payload) {
+      throw new StegoError("CORRUPTED", "The hidden data looks incomplete or corrupted.");
+    }
+    return { flag, payload };
   }
 
   /* ----------------------------------------------------------------
@@ -365,6 +806,7 @@
   const hideCapacityFill = document.getElementById("hideCapacityFill");
   const hideCapacityHint = document.getElementById("hideCapacityHint");
   const hideEncryptToggle = document.getElementById("hideEncryptToggle");
+  const hideRobustToggle = document.getElementById("hideRobustToggle");
   const hidePasswordWrap = document.getElementById("hidePasswordWrap");
   const hidePasswordInput = document.getElementById("hidePasswordInput");
   const hidePasswordVisibility = document.getElementById(
@@ -528,7 +970,8 @@
     if (err instanceof StegoError) {
       let message = err.message;
       if (err.code === "CORRUPTED") {
-        message = "The hidden data could not be recovered. This usually happens if the image was compressed through WhatsApp, social media, or email. Try sharing the PNG file directly via file transfer or cloud storage instead.";
+        message =
+          "The hidden data could not be recovered. The image was probably compressed too hard, resized or edited after sharing. If it was created in normal (non-WhatsApp-safe) mode, send it as a Document/File instead of a photo.";
       }
       showToast("error", ERROR_TITLES[err.code] || "Error", message);
     } else {
@@ -544,13 +987,15 @@
      10. FILE LOADING & VALIDATION
      ---------------------------------------------------------------- */
 
-  function validatePngFile(file) {
+  function validateImageFile(file) {
     if (!file) throw new StegoError("NO_FILE", "No file was selected.");
-    const isPng = file.type === "image/png" || /\.png$/i.test(file.name);
-    if (!isPng) {
+    const isImage =
+      /^image\/(png|jpe?g|webp|gif|bmp)$/i.test(file.type) ||
+      /\.(png|jpe?g|webp|gif|bmp)$/i.test(file.name);
+    if (!isImage) {
       throw new StegoError(
         "INVALID_TYPE",
-        "Please upload a PNG image. Other formats, like JPEG, use lossy compression that destroys hidden data.",
+        "Please choose a PNG, JPG or WebP image.",
       );
     }
     if (file.size > MAX_FILE_SIZE) {
@@ -592,6 +1037,34 @@
     return ctx.getImageData(0, 0, canvas.width, canvas.height);
   }
 
+  /** Size the image will have in robust mode (long side capped so WhatsApp won't resize it). */
+  function robustDimensions(width, height) {
+    const scale = Math.min(1, ROBUST_MAX_DIM / Math.max(width, height));
+    return {
+      width: Math.max(1, Math.round(width * scale)),
+      height: Math.max(1, Math.round(height * scale)),
+      scaled: scale < 1,
+    };
+  }
+
+  /** Returns a copy of imageData scaled down to the robust-mode size (or the same data if small enough). */
+  function fitImageDataForRobust(imageData) {
+    const dims = robustDimensions(imageData.width, imageData.height);
+    if (!dims.scaled) return imageData;
+    const src = document.createElement("canvas");
+    src.width = imageData.width;
+    src.height = imageData.height;
+    src.getContext("2d").putImageData(imageData, 0, 0);
+    const dst = document.createElement("canvas");
+    dst.width = dims.width;
+    dst.height = dims.height;
+    const ctx = dst.getContext("2d", { willReadFrequently: true });
+    ctx.imageSmoothingEnabled = true;
+    ctx.imageSmoothingQuality = "high";
+    ctx.drawImage(src, 0, 0, dims.width, dims.height);
+    return ctx.getImageData(0, 0, dims.width, dims.height);
+  }
+
   function setButtonLoading(btn, isLoading, label) {
     btn.classList.toggle("is-loading", isLoading);
     btn.disabled = isLoading;
@@ -611,7 +1084,7 @@
   }
 
   function buildOutputFilename(originalName) {
-    const base = (originalName || "image").replace(/\.png$/i, "");
+    const base = (originalName || "image").replace(/\.(png|jpe?g|webp|gif|bmp)$/i, "");
     return `${base}-hidden.png`;
   }
 
@@ -674,7 +1147,7 @@
 
   async function handleHideFile(file) {
     try {
-      validatePngFile(file);
+      validateImageFile(file);
       hideDropzone.classList.add("is-loading");
 
       const img = await loadImageFromFile(file);
@@ -683,12 +1156,6 @@
       state.hide.file = file;
       state.hide.fileName = file.name;
       state.hide.imageData = imageData;
-
-      const rawCapacityBits = usableChannelCount(imageData);
-      state.hide.capacityBytes = Math.max(
-        0,
-        Math.floor(rawCapacityBits / 8) - HEADER_BYTES,
-      );
 
       hidePreviewImg.src = URL.createObjectURL(file);
       hidePreviewWrap.classList.remove("hidden");
@@ -746,7 +1213,20 @@
       return;
     }
 
-    const capacity = state.hide.capacityBytes;
+    let capacity;
+    if (hideRobustToggle.checked) {
+      const d = robustDimensions(
+        state.hide.imageData.width,
+        state.hide.imageData.height,
+      );
+      capacity = robustCapacityBytes(d.width, d.height);
+    } else {
+      capacity = Math.max(
+        0,
+        Math.floor(usableChannelCount(state.hide.imageData) / 8) - HEADER_BYTES,
+      );
+    }
+    state.hide.capacityBytes = capacity;
     const percent =
       capacity > 0 ? Math.min(100, (totalNeeded / capacity) * 100) : 100;
     const fits = capacity > 0 && totalNeeded <= capacity;
@@ -790,14 +1270,20 @@
 
       setButtonLoading(hideSubmitBtn, true, "Encoding pixels…");
 
+      const robust = hideRobustToggle.checked;
+
       // Work on a clone so a second attempt never compounds onto already-modified data.
+      // In robust mode the image is first shrunk to a size WhatsApp will not resize again.
+      const sourceData = robust
+        ? fitImageDataForRobust(state.hide.imageData)
+        : state.hide.imageData;
       const working = new ImageData(
-        new Uint8ClampedArray(state.hide.imageData.data),
-        state.hide.imageData.width,
-        state.hide.imageData.height,
+        new Uint8ClampedArray(sourceData.data),
+        sourceData.width,
+        sourceData.height,
       );
 
-      await encodeMessageIntoImageData(working, message, password);
+      await encodeMessageIntoImageData(working, message, password, robust);
       await wait(350); // keeps the loading state perceivable, even on tiny images
 
       setButtonLoading(hideSubmitBtn, true, "Preparing PNG…");
@@ -822,7 +1308,9 @@
         showToast(
           "success",
           "Hidden image created",
-          "Your image downloaded with the secret message embedded inside it.",
+          robust
+            ? `Saved as ${working.width} × ${working.height} px PNG. Send it as a normal photo on WhatsApp — the message will survive.`
+            : "Your image downloaded with the secret message embedded inside it. Send it as a file/document (not a photo) so it is not compressed.",
         );
         setTimeout(() => {
           setButtonLoading(hideSubmitBtn, false, "Create Hidden Image");
@@ -840,6 +1328,8 @@
     setupDropzone(hideDropzone, hideFileInput, handleHideFile);
     hideRemoveImg.addEventListener("click", resetHideImage);
     hideMessageInput.addEventListener("input", recalcHideCapacity);
+
+    hideRobustToggle.addEventListener("change", recalcHideCapacity);
 
     hideEncryptToggle.addEventListener("change", () => {
       hidePasswordWrap.classList.toggle("hidden", !hideEncryptToggle.checked);
@@ -864,7 +1354,7 @@
 
   async function handleRevealFile(file) {
     try {
-      validatePngFile(file);
+      validateImageFile(file);
       revealDropzone.classList.add("is-loading");
 
       const img = await loadImageFromFile(file);
